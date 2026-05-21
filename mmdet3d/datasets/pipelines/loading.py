@@ -1,3 +1,4 @@
+import json
 import os
 from typing import Any, Dict, Tuple
 
@@ -8,6 +9,7 @@ from nuscenes.utils.data_classes import RadarPointCloud
 from nuscenes.map_expansion.map_api import NuScenesMap
 from nuscenes.map_expansion.map_api import locations as LOCATIONS
 from PIL import Image
+import cv2
 
 from mmdet3d.core.points import BasePoints, get_points_type
 from mmdet.datasets.builder import PIPELINES
@@ -310,6 +312,119 @@ class LoadBEVSegmentation:
                 labels[k, masks[index]] = 1
 
         data["gt_masks_bev"] = labels
+        return data
+
+
+@PIPELINES.register_module()
+class LoadCustomBEVSegmentation:
+    def __init__(
+        self,
+        xbound: Tuple[float, float, float],
+        ybound: Tuple[float, float, float],
+        classes: Tuple[str, ...],
+        line_width: int = 2,
+    ) -> None:
+        patch_h = ybound[1] - ybound[0]
+        patch_w = xbound[1] - xbound[0]
+        self.canvas_size = (int(patch_h / ybound[2]), int(patch_w / xbound[2]))
+        self.xbound = xbound
+        self.ybound = ybound
+        self.classes = classes
+        self.line_width = line_width
+
+    def _to_pixel(self, points):
+        points = np.asarray(points, dtype=np.float32)
+        if points.ndim != 2 or points.shape[0] == 0:
+            return np.zeros((0, 2), dtype=np.int32)
+
+        x = points[:, 0]
+        y = points[:, 1]
+        col = np.floor((x - self.xbound[0]) / self.xbound[2]).astype(np.int32)
+        row = np.floor((self.ybound[1] - y) / self.ybound[2]).astype(np.int32)
+        return np.stack([col, row], axis=1)
+
+    @staticmethod
+    def _transform_points(points, transform):
+        points = np.asarray(points, dtype=np.float32)
+        if points.ndim != 2 or points.shape[0] == 0:
+            return points
+        coords = np.concatenate(
+            [points[:, :3], np.ones((points.shape[0], 1), dtype=np.float32)],
+            axis=1,
+        )
+        coords = coords @ transform.T
+        points = points.copy()
+        points[:, :3] = coords[:, :3]
+        return points
+
+    def _draw_polyline(self, mask, points, width=None):
+        pixels = self._to_pixel(points)
+        if pixels.shape[0] < 2:
+            return
+        cv2.polylines(
+            mask,
+            [pixels.reshape(-1, 1, 2)],
+            isClosed=False,
+            color=1,
+            thickness=width or self.line_width,
+            lineType=cv2.LINE_AA,
+        )
+
+    def _draw_polygon(self, mask, points):
+        pixels = self._to_pixel(points)
+        if pixels.shape[0] < 3:
+            return
+        cv2.fillPoly(mask, [pixels.reshape(-1, 1, 2)], color=1)
+
+    @staticmethod
+    def _road_mark_points(mark):
+        geo_3d = mark.get("geo_3d", {})
+        for key in ("geo_rbbox", "geo_arrowpoints_list", "geo_keypoints_list"):
+            points = geo_3d.get(key, [])
+            if points:
+                return points
+        return []
+
+    def __call__(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        ann_path = data.get("ann_path")
+        if ann_path is None:
+            raise KeyError("LoadCustomBEVSegmentation requires ann_path in data info.")
+
+        with open(ann_path, "r", encoding="utf-8") as f:
+            ann = json.load(f)
+
+        h, w = self.canvas_size
+        labels = np.zeros((len(self.classes), h, w), dtype=np.uint8)
+        map_ann = ann.get("lanelines_annotation", {})
+        class_to_idx = {name: i for i, name in enumerate(self.classes)}
+        lidar_aug_matrix = data.get("lidar_aug_matrix", np.eye(4, dtype=np.float32))
+
+        for lane in map_ann.get("lane", []):
+            points = self._transform_points(lane.get("geo_3d", []), lidar_aug_matrix)
+            label = lane.get("label", "")
+            if label == "LANELINE":
+                for name in ("lane", "divider"):
+                    if name in class_to_idx:
+                        self._draw_polyline(labels[class_to_idx[name]], points)
+            elif label == "ROADSIDE":
+                for name in ("roadside", "divider"):
+                    if name in class_to_idx:
+                        self._draw_polyline(labels[class_to_idx[name]], points)
+
+        for mark in map_ann.get("road_mark", []):
+            points = self._transform_points(self._road_mark_points(mark), lidar_aug_matrix)
+            label = mark.get("label", "")
+            if label == "AREA":
+                for name in ("road_mark", "drivable_area"):
+                    if name in class_to_idx:
+                        self._draw_polygon(labels[class_to_idx[name]], points)
+            elif label == "ARROW":
+                if "road_mark" in class_to_idx:
+                    self._draw_polygon(labels[class_to_idx["road_mark"]], points)
+            elif "road_mark" in class_to_idx:
+                self._draw_polyline(labels[class_to_idx["road_mark"]], points)
+
+        data["gt_masks_bev"] = labels.astype(np.int64)
         return data
 
 

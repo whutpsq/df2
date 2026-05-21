@@ -29,7 +29,10 @@ object_classes:
   - cyclist
   - obstacle
 
-map_classes: []
+map_classes:
+  - lane
+  - roadside
+  - road_mark
 
 input_modality:
   use_lidar: true
@@ -145,83 +148,20 @@ model:
         bias: false
       use_conv_for_no_stride: true
   heads:
-    map: null
-    object:
-      type: TransFusionHead
-      num_proposals: 200
-      auxiliary: true
+    map:
+      type: BEVSegmentationHead
       in_channels: 512
-      hidden_channel: 128
-      num_classes: 4
-      num_decoder_layers: 1
-      num_heads: 8
-      nms_kernel_size: 3
-      ffn_channel: 256
-      dropout: 0.1
-      bn_momentum: 0.1
-      activation: relu
-      train_cfg:
-        dataset: nuScenes
-        point_cloud_range: ${point_cloud_range}
-        grid_size: [512, 512, 1]
-        voxel_size: ${voxel_size}
-        out_size_factor: 8
-        gaussian_overlap: 0.1
-        min_radius: 2
-        pos_weight: -1
-        code_weights: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2, 0.2]
-        assigner:
-          type: HungarianAssigner3D
-          iou_calculator:
-            type: BboxOverlaps3D
-            coordinate: lidar
-          cls_cost:
-            type: FocalLossCost
-            gamma: 2.0
-            alpha: 0.25
-            weight: 0.15
-          reg_cost:
-            type: BBoxBEVL1Cost
-            weight: 0.25
-          iou_cost:
-            type: IoU3DCost
-            weight: 0.25
-      test_cfg:
-        dataset: nuScenes
-        grid_size: [512, 512, 1]
-        out_size_factor: 8
-        voxel_size: ${voxel_size[:2]}
-        pc_range: ${point_cloud_range[:2]}
-        nms_type: null
-      common_heads:
-        center: [2, 2]
-        height: [1, 2]
-        dim: [3, 2]
-        rot: [2, 2]
-        vel: [2, 2]
-      bbox_coder:
-        type: TransFusionBBoxCoder
-        pc_range: ${point_cloud_range[:2]}
-        post_center_range: [-61.2, -61.2, -10.0, 61.2, 61.2, 10.0]
-        score_threshold: 0.0
-        out_size_factor: 8
-        voxel_size: ${voxel_size[:2]}
-        code_size: 10
-      loss_cls:
-        type: PyTorchFocalLoss
-        use_sigmoid: true
-        gamma: 2.0
-        alpha: 0.25
-        reduction: mean
-        loss_weight: 1.0
-      loss_heatmap:
-        type: GaussianFocalLoss
-        reduction: mean
-        loss_weight: 1.0
-      loss_bbox:
-        type: L1Loss
-        reduction: mean
-        loss_weight: 0.25
+      grid_transform:
+        input_scope:
+          - [-51.2, 51.2, 0.8]
+          - [-51.2, 51.2, 0.8]
+        output_scope:
+          - [-50.0, 50.0, 0.5]
+          - [-50.0, 50.0, 0.5]
+        prescale_factor: 1
+      classes: ${map_classes}
+      loss: focal
+    object: null
 
 train_pipeline:
   -
@@ -244,11 +184,6 @@ train_pipeline:
     remove_close: true
     load_augmented: ${load_augmented}
   -
-    type: LoadAnnotations3D
-    with_bbox_3d: true
-    with_label_3d: true
-    with_attr_label: false
-  -
     type: ImageAug3D
     final_dim: ${image_size}
     resize_lim: ${augment2d.resize[0]}
@@ -263,6 +198,12 @@ train_pipeline:
     trans_lim: ${augment3d.translate}
     is_train: true
   -
+    type: LoadCustomBEVSegmentation
+    xbound: [-50.0, 50.0, 0.5]
+    ybound: [-50.0, 50.0, 0.5]
+    classes: ${map_classes}
+    line_width: 2
+  -
     type: RandomFlip3D
   -
     type: PointsRangeFilter
@@ -270,12 +211,6 @@ train_pipeline:
   -
     type: PointSample
     num_points: 60000
-  -
-    type: ObjectRangeFilter
-    point_cloud_range: ${point_cloud_range}
-  -
-    type: ObjectNameFilter
-    classes: ${object_classes}
   -
     type: ImageNormalize
     mean: [0.485, 0.456, 0.406]
@@ -301,8 +236,7 @@ train_pipeline:
     keys:
       - img
       - points
-      - gt_bboxes_3d
-      - gt_labels_3d
+      - gt_masks_bev
     meta_keys:
       - camera_intrinsics
       - camera2ego
@@ -334,11 +268,6 @@ test_pipeline:
     remove_close: true
     load_augmented: ${load_augmented}
   -
-    type: LoadAnnotations3D
-    with_bbox_3d: true
-    with_label_3d: true
-    with_attr_label: false
-  -
     type: ImageAug3D
     final_dim: ${image_size}
     resize_lim: ${augment2d.resize[1]}
@@ -352,6 +281,12 @@ test_pipeline:
     rot_lim: [0.0, 0.0]
     trans_lim: 0.0
     is_train: false
+  -
+    type: LoadCustomBEVSegmentation
+    xbound: [-50.0, 50.0, 0.5]
+    ybound: [-50.0, 50.0, 0.5]
+    classes: ${map_classes}
+    line_width: 2
   -
     type: PointsRangeFilter
     point_cloud_range: ${point_cloud_range}
@@ -367,8 +302,7 @@ test_pipeline:
     keys:
       - img
       - points
-      - gt_bboxes_3d
-      - gt_labels_3d
+      - gt_masks_bev
     meta_keys:
       - camera_intrinsics
       - camera2ego
@@ -393,6 +327,7 @@ data:
       map_classes: ${map_classes}
       modality: ${input_modality}
       test_mode: false
+      filter_empty_gt: false
       use_valid_flag: true
       box_type_3d: LiDAR
   val:
@@ -403,7 +338,8 @@ data:
     object_classes: ${object_classes}
     map_classes: ${map_classes}
     modality: ${input_modality}
-    test_mode: false
+    test_mode: true
+    filter_empty_gt: false
     use_valid_flag: true
     box_type_3d: LiDAR
   test:
@@ -415,6 +351,7 @@ data:
     map_classes: ${map_classes}
     modality: ${input_modality}
     test_mode: true
+    filter_empty_gt: false
     use_valid_flag: true
     box_type_3d: LiDAR
 
@@ -445,15 +382,11 @@ lr_config:
 
 momentum_config: null
 
-max_epochs: 30
+max_epochs: 20
 runner:
   type: CustomEpochBasedRunner
   max_epochs: ${max_epochs}
 
 evaluation:
-  interval: 999
-  pipeline: ${test_pipeline}
-
-checkpoint_config:
   interval: 1
-  max_keep_ckpts: 5
+  pipeline: ${test_pipeline}

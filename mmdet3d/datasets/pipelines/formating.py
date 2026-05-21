@@ -112,10 +112,13 @@ class DefaultFormatBundle3D:
             "attr_labels",
             "centers2d",
             "depths",
+            "gt_masks_bev",
         ]:
             if key not in results:
                 continue
-            if isinstance(results[key], list):
+            if key == "gt_masks_bev":
+                results[key] = DC(to_tensor(results[key]), stack=True)
+            elif isinstance(results[key], list):
                 results[key] = DC([to_tensor(res) for res in results[key]])
             else:
                 results[key] = DC(to_tensor(results[key]))

@@ -230,6 +230,7 @@ class NuScenesDataset(Custom3DDataset):
             sweeps=info["sweeps"],
             timestamp=info["timestamp"],
             location=info.get('location', None),
+            ann_path=info.get("ann_path", None),
         )
 
         if self.modality.get("use_radar", False) and info.get("radars"):

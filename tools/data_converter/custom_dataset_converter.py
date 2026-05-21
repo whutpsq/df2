@@ -392,6 +392,7 @@ def build_info(root_path, sample, skip_pcd_convert=False):
         "ego2global_translation": ego2global[:3, 3].tolist(),
         "ego2global_rotation": matrix_to_quaternion(ego2global),
         "timestamp": int(ann["timestamp"]),
+        "ann_path": ann_path,
         "prev_token": "" if sample.get("prev") is None else str(sample["prev"]),
         "next_token": "" if sample.get("next") is None else str(sample["next"]),
         "location": "custom",
