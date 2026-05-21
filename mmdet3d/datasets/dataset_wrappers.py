@@ -44,13 +44,22 @@ class CBGSDataset:
             for cat_id in sample_cat_ids:
                 class_sample_idxs[cat_id].append(idx)
         duplicated_samples = sum([len(v) for _, v in class_sample_idxs.items()])
+
+        if duplicated_samples == 0:
+            return list(range(len(self.dataset)))
+
+        class_sample_idxs = {
+            cat_id: sample_idxs
+            for cat_id, sample_idxs in class_sample_idxs.items()
+            if len(sample_idxs) > 0
+        }
         class_distribution = {
             k: len(v) / duplicated_samples for k, v in class_sample_idxs.items()
         }
 
         sample_indices = []
 
-        frac = 1.0 / len(self.CLASSES)
+        frac = 1.0 / len(class_sample_idxs)
         ratios = [frac / v for v in class_distribution.values()]
         for cls_inds, ratio in zip(list(class_sample_idxs.values()), ratios):
             sample_indices += np.random.choice(

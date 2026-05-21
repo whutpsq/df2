@@ -1,9 +1,9 @@
-"""Convert the clip_S31a custom dataset into BEVFusion nuScenes-style infos.
+"""Convert custom clip datasets into BEVFusion nuScenes-style infos.
 
 This converter keeps the training code on the existing NuScenesDataset path:
-it reads the custom sample/annotation JSON files, converts compressed PCD
-point clouds to float32 .bin files, and writes the info pkl files consumed by
-the current BEVFusion pipelines.
+it reads the custom sample/annotation JSON files from one clip or a directory
+of clips, converts compressed PCD point clouds to float32 .bin files, and
+writes the info pkl files consumed by the current BEVFusion pipelines.
 """
 
 import argparse
@@ -35,29 +35,93 @@ CAMERA_MAP = {
     "CAM_BACK_RIGHT": ("right_rear_camera", "right-rear-camera"),
 }
 
+CUSTOM_OBJECT_CLASSES = [
+    "pedestrian",
+    "rider",
+    "bicycle",
+    "motorcycle",
+    "tricycle",
+    "car",
+    "bus",
+    "truck",
+    "large_vehicle",
+    "special_vehicle",
+    "vehicle_door",
+    "cart",
+    "animal",
+    "traffic_sign",
+    "traffic_cone",
+    "bollard",
+    "road_barrier",
+    "barrier_gate",
+    "parking_lock",
+    "chock",
+    "unknown_obstacle",
+]
+
 CLASS_MAP = {
+    "Pedestrian": "pedestrian",
+    "Pedestrian_else": "pedestrian",
+    "Police": "pedestrian",
+    "Standed_rider": "rider",
+    "Other_rider": "rider",
+    "Non_motor_rider": "rider",
+    "Motor_rider": "rider",
+    "Bicycle": "bicycle",
+    "Motorcycle": "motorcycle",
+    "Tricycle": "tricycle",
     "Car": "car",
     "Suv": "car",
-    "Vehicle_else": "car",
-    "Pedestrian": "pedestrian",
-    "Bicycle": "cyclist",
-    "Motorcycle": "cyclist",
-    "Tricycle": "cyclist",
-    "Non_motor_rider": "cyclist",
-    "Bollards": "obstacle",
-    "Sphere_bollards": "obstacle",
-    "Cone": "obstacle",
+    "Bus": "bus",
+    "Truck": "truck",
+    "Huge_vehicle": "large_vehicle",
+    "Vehicle_else": "special_vehicle",
+    "Firetruck": "special_vehicle",
+    "Ambulance": "special_vehicle",
+    "Policecar": "special_vehicle",
+    "Sprinkler": "special_vehicle",
+    "Vehicle_door": "vehicle_door",
+    "Cart": "cart",
+    "Animal_small": "animal",
+    "Animal_big": "animal",
+    "Traffic_sign": "traffic_sign",
+    "Triangle_mark": "traffic_sign",
+    "Cone": "traffic_cone",
+    "Bollards": "bollard",
+    "Sphere_bollards": "bollard",
+    "Water_barrier": "road_barrier",
+    "Water_barrier_crowding": "road_barrier",
+    "Road_barrier": "road_barrier",
+    "Crash_bucket": "road_barrier",
+    "Stopping_sign": "traffic_sign",
+    "Barrier_gate": "barrier_gate",
+    "Parking_lock": "parking_lock",
+    "Chock": "chock",
+    "Unknown": "unknown_obstacle",
 }
 
-IGNORED_CLASSES = {"Vehicle_door"}
+IGNORED_CLASSES = set()
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root-path", required=True, help="Custom clip root")
+    parser.add_argument(
+        "--root-path",
+        required=True,
+        help="Custom clip root, or a directory containing multiple clip roots.",
+    )
     parser.add_argument("--info-prefix", default="custom_dataset")
     parser.add_argument("--version", default="custom-v1.0")
     parser.add_argument("--split-ratio", type=float, default=0.8)
+    parser.add_argument(
+        "--split-by",
+        choices=["auto", "clip", "sample"],
+        default="auto",
+        help=(
+            "How to split train/val. 'auto' keeps sample-level split for a "
+            "single clip and clip-level split for multiple clips."
+        ),
+    )
     parser.add_argument(
         "--skip-pcd-convert",
         action="store_true",
@@ -282,7 +346,14 @@ def convert_points(root_path, sample, skip=False):
     return out_path
 
 
-def build_cams(root_path, sample, ann, lidar2ego):
+def make_unique_token(clip_id, token):
+    if token is None or token == "":
+        return ""
+    token = str(token)
+    return token if clip_id is None else f"{clip_id}:{token}"
+
+
+def build_cams(root_path, sample, ann, lidar2ego, clip_id=None):
     cams = {}
     ego2global = np.asarray(ann["ego2global_transformation_matrix"], dtype=np.float64)
     ego2global[:3, :3] = normalize_rotation(ego2global[:3, :3])
@@ -301,7 +372,7 @@ def build_cams(root_path, sample, ann, lidar2ego):
         cams[bev_name] = {
             "data_path": img_path,
             "type": bev_name,
-            "sample_data_token": sample[sample_key],
+            "sample_data_token": make_unique_token(clip_id, sample[sample_key]),
             "sensor2ego_translation": cam2ego[:3, 3].tolist(),
             "sensor2ego_rotation": matrix_to_quaternion(cam2ego),
             "ego2global_translation": ego2global[:3, 3].tolist(),
@@ -364,7 +435,7 @@ def build_annotations(ann):
     )
 
 
-def build_info(root_path, sample, skip_pcd_convert=False):
+def build_info(root_path, sample, skip_pcd_convert=False, clip_id=None):
     ann_path = osp.join(
         root_path,
         "annotations",
@@ -384,18 +455,18 @@ def build_info(root_path, sample, skip_pcd_convert=False):
 
     return {
         "lidar_path": lidar_path,
-        "token": str(sample["sample_annotation"]),
+        "token": make_unique_token(clip_id, sample["sample_annotation"]),
         "sweeps": [],
-        "cams": build_cams(root_path, sample, ann, lidar2ego),
+        "cams": build_cams(root_path, sample, ann, lidar2ego, clip_id),
         "lidar2ego_translation": lidar2ego[:3, 3].tolist(),
         "lidar2ego_rotation": matrix_to_quaternion(lidar2ego),
         "ego2global_translation": ego2global[:3, 3].tolist(),
         "ego2global_rotation": matrix_to_quaternion(ego2global),
         "timestamp": int(ann["timestamp"]),
         "ann_path": ann_path,
-        "prev_token": "" if sample.get("prev") is None else str(sample["prev"]),
-        "next_token": "" if sample.get("next") is None else str(sample["next"]),
-        "location": "custom",
+        "prev_token": make_unique_token(clip_id, sample.get("prev")),
+        "next_token": make_unique_token(clip_id, sample.get("next")),
+        "location": "custom" if clip_id is None else clip_id,
         "gt_boxes": gt_boxes,
         "gt_names": gt_names,
         "gt_velocity": gt_velocity,
@@ -405,8 +476,31 @@ def build_info(root_path, sample, skip_pcd_convert=False):
     }
 
 
-def create_custom_infos(root_path, info_prefix, version, split_ratio, skip_pcd_convert):
-    sample_path = osp.join(root_path, "annotations", "sample.json")
+def is_clip_root(path):
+    return osp.isfile(osp.join(path, "annotations", "sample.json"))
+
+
+def discover_clip_roots(root_path):
+    root_path = osp.abspath(root_path)
+    if is_clip_root(root_path):
+        return [root_path], root_path
+
+    clip_roots = []
+    for name in sorted(os.listdir(root_path)):
+        child = osp.join(root_path, name)
+        if osp.isdir(child) and is_clip_root(child):
+            clip_roots.append(child)
+
+    if not clip_roots:
+        raise FileNotFoundError(
+            "No clip roots found. Expected annotations/sample.json either "
+            f"under {root_path} or one level below it."
+        )
+    return clip_roots, root_path
+
+
+def load_clip_infos(clip_root, clip_id, skip_pcd_convert):
+    sample_path = osp.join(clip_root, "annotations", "sample.json")
     with open(sample_path, "r", encoding="utf-8") as f:
         samples = json.load(f)
     samples = sorted(samples, key=lambda x: Decimal(str(x["sample_annotation"])))
@@ -415,23 +509,80 @@ def create_custom_infos(root_path, info_prefix, version, split_ratio, skip_pcd_c
     infos = []
     for index, sample in enumerate(iterator):
         if mmcv is None:
-            print(f"[{index + 1}/{len(samples)}] {sample['sample_annotation']}")
-        infos.append(build_info(root_path, sample, skip_pcd_convert))
+            print(
+                f"[{index + 1}/{len(samples)}] "
+                f"{clip_id}/{sample['sample_annotation']}"
+            )
+        infos.append(build_info(clip_root, sample, skip_pcd_convert, clip_id))
+    return infos
 
+
+def split_infos_by_sample(infos, split_ratio):
     split_index = int(len(infos) * split_ratio)
-    train_infos = infos[:split_index]
-    val_infos = infos[split_index:]
-    metadata = {"version": version, "classes": sorted(set(CLASS_MAP.values()))}
+    return infos[:split_index], infos[split_index:]
 
-    train_path = osp.join(root_path, f"{info_prefix}_infos_train.pkl")
-    val_path = osp.join(root_path, f"{info_prefix}_infos_val.pkl")
+
+def split_infos_by_clip(clip_infos, split_ratio):
+    split_index = int(len(clip_infos) * split_ratio)
+    if len(clip_infos) > 1:
+        split_index = min(max(split_index, 1), len(clip_infos) - 1)
+
+    train_infos = []
+    val_infos = []
+    for _, infos in clip_infos[:split_index]:
+        train_infos.extend(infos)
+    for _, infos in clip_infos[split_index:]:
+        val_infos.extend(infos)
+    return train_infos, val_infos
+
+
+def create_custom_infos(
+    root_path,
+    info_prefix,
+    version,
+    split_ratio,
+    skip_pcd_convert,
+    split_by="auto",
+):
+    clip_roots, output_root = discover_clip_roots(root_path)
+    multiple_clips = len(clip_roots) > 1
+
+    clip_infos = []
+    for clip_index, clip_root in enumerate(clip_roots):
+        clip_id = osp.basename(osp.normpath(clip_root)) if multiple_clips else None
+        print(f"Processing clip {clip_index + 1}/{len(clip_roots)}: {clip_root}")
+        infos = load_clip_infos(clip_root, clip_id, skip_pcd_convert)
+        clip_infos.append((clip_root, infos))
+
+    if split_by == "auto":
+        split_by = "clip" if multiple_clips else "sample"
+
+    if split_by == "clip":
+        train_infos, val_infos = split_infos_by_clip(clip_infos, split_ratio)
+    else:
+        infos = []
+        for _, clip_info in clip_infos:
+            infos.extend(clip_info)
+        infos = sorted(infos, key=lambda x: (x["location"], x["timestamp"]))
+        train_infos, val_infos = split_infos_by_sample(infos, split_ratio)
+
+    metadata = {
+        "version": version,
+        "classes": CUSTOM_OBJECT_CLASSES,
+        "clip_count": len(clip_roots),
+        "split_by": split_by,
+    }
+
+    train_path = osp.join(output_root, f"{info_prefix}_infos_train.pkl")
+    val_path = osp.join(output_root, f"{info_prefix}_infos_val.pkl")
     dump_pickle({"infos": train_infos, "metadata": metadata}, train_path)
     dump_pickle({"infos": val_infos, "metadata": metadata}, val_path)
 
-    print(f"Total samples: {len(infos)}")
+    print(f"Total clips: {len(clip_roots)}")
+    print(f"Total samples: {len(train_infos) + len(val_infos)}")
     print(f"Train samples: {len(train_infos)} -> {train_path}")
     print(f"Val samples: {len(val_infos)} -> {val_path}")
-    print(f"Converted point clouds are in: {osp.join(root_path, 'points_bin')}")
+    print("Converted point clouds are stored in each clip's points_bin directory.")
 
 
 def dump_pickle(data, path):
@@ -452,6 +603,7 @@ def main():
         version=args.version,
         split_ratio=args.split_ratio,
         skip_pcd_convert=args.skip_pcd_convert,
+        split_by=args.split_by,
     )
 
 

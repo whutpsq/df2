@@ -1,5 +1,5 @@
 dataset_type: NuScenesDataset
-dataset_root: data/clip_S31a_1_20251007211500/
+dataset_root: data/
 
 gt_paste_stop_epoch: 0
 reduce_beams: null
@@ -25,9 +25,26 @@ augment3d:
 
 object_classes:
   - car
+  - bus
+  - truck
+  - large_vehicle
+  - special_vehicle
+  - vehicle_door
   - pedestrian
-  - cyclist
-  - obstacle
+  - rider
+  - bicycle
+  - motorcycle
+  - tricycle
+  - cart
+  - animal
+  - traffic_sign
+  - traffic_cone
+  - bollard
+  - road_barrier
+  - barrier_gate
+  - parking_lock
+  - chock
+  - unknown_obstacle
 
 map_classes: []
 
@@ -152,7 +169,7 @@ model:
       auxiliary: true
       in_channels: 512
       hidden_channel: 128
-      num_classes: 4
+      num_classes: 21
       num_decoder_layers: 1
       num_heads: 8
       nms_kernel_size: 3
@@ -383,18 +400,16 @@ data:
   samples_per_gpu: 1
   workers_per_gpu: 2
   train:
-    type: CBGSDataset
-    dataset:
-      type: ${dataset_type}
-      dataset_root: ${dataset_root}
-      ann_file: ${dataset_root + "custom_dataset_infos_train.pkl"}
-      pipeline: ${train_pipeline}
-      object_classes: ${object_classes}
-      map_classes: ${map_classes}
-      modality: ${input_modality}
-      test_mode: false
-      use_valid_flag: true
-      box_type_3d: LiDAR
+    type: ${dataset_type}
+    dataset_root: ${dataset_root}
+    ann_file: ${dataset_root + "custom_dataset_infos_train.pkl"}
+    pipeline: ${train_pipeline}
+    object_classes: ${object_classes}
+    map_classes: ${map_classes}
+    modality: ${input_modality}
+    test_mode: false
+    use_valid_flag: true
+    box_type_3d: LiDAR
   val:
     type: ${dataset_type}
     dataset_root: ${dataset_root}
@@ -445,7 +460,10 @@ lr_config:
 
 momentum_config: null
 
-max_epochs: 30
+log_config:
+  interval: 5
+
+max_epochs: 2
 runner:
   type: CustomEpochBasedRunner
   max_epochs: ${max_epochs}

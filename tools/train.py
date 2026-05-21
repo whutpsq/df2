@@ -18,6 +18,31 @@ from mmdet3d.models import build_model
 from mmdet3d.utils import get_root_logger, convert_sync_batchnorm, recursive_eval
 
 
+DATASET_WRAPPERS = {
+    "CBGSDataset",
+    "ClassBalancedDataset",
+    "ConcatDataset",
+    "RepeatDataset",
+}
+
+
+def normalize_train_dataset_cfg(cfg):
+    """Fix stale wrapper-style train configs after command-line overrides."""
+    train_cfg = cfg.data.train
+    if not isinstance(train_cfg, dict):
+        return
+    if "dataset" not in train_cfg:
+        return
+    if train_cfg.get("type") in DATASET_WRAPPERS:
+        return
+
+    nested_cfg = copy.deepcopy(train_cfg["dataset"])
+    top_cfg = copy.deepcopy(train_cfg)
+    top_cfg.pop("dataset")
+    nested_cfg.update(top_cfg)
+    cfg.data.train = nested_cfg
+
+
 def main():
     dist.init()
 
@@ -30,6 +55,7 @@ def main():
     configs.update(opts)
 
     cfg = Config(recursive_eval(configs), filename=args.config)
+    normalize_train_dataset_cfg(cfg)
 
     torch.backends.cudnn.benchmark = cfg.cudnn_benchmark
     torch.cuda.set_device(dist.local_rank())
@@ -50,6 +76,7 @@ def main():
 
     # log some basic info
     logger.info(f"Config:\n{cfg.pretty_text}")
+    logger.info(f"Train dataset config:\n{cfg.data.train}")
 
     # set random seeds
     if cfg.seed is not None:
