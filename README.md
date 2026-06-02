@@ -227,3 +227,38 @@ python tools/create_data.py nuscenes --root-path ./data/nuscenes --out-dir ./dat
 torchpack dist-run -np 1 python tools/visualize.py configs/nuscenes/seg/fusion-bev256d2-lss.yaml --mode pred --checkpoint pretrained/bevfusion-seg.pth --out-dir out/vis_seg
 torchpack dist-run -np 1 python tools/visualize.py configs/nuscenes/det/transfusion/secfpn/camera+lidar/swint_v0p075/convfuser.yaml --mode pred --checkpoint pretrained/bevfusion-det.pth --bbox-score 0.2 --out-dir out/vis
 ```
+
+### Test custom demo data with official nuScenes checkpoints
+
+The custom dataset configs under `configs/custom_dataset/` keep the adapted
+training/testing behavior for local classes. To run the official nuScenes
+checkpoints on the same demo data without changing those configs, use the
+following override configs. They keep the official model heads and class counts
+so the pretrained checkpoints load without shape mismatches, while replacing the
+data source with `data/custom_dataset_infos_val.pkl`.
+
+```bash
+torchpack dist-run -np 1 python tools/test.py configs/nuscenes/det/transfusion/secfpn/camera+lidar/swint_v0p075/custom_demo.yaml pretrained/bevfusion-det.pth --out out/custom_demo_det.pkl
+torchpack dist-run -np 1 python tools/test.py configs/nuscenes/seg/custom_demo_fusion-bev256d2-lss.yaml pretrained/bevfusion-seg.pth --out out/custom_demo_seg.pkl
+```
+
+For visual inspection:
+
+```bash
+torchpack dist-run -np 1 python tools/visualize.py configs/nuscenes/det/transfusion/secfpn/camera+lidar/swint_v0p075/custom_demo.yaml --mode pred --checkpoint pretrained/bevfusion-det.pth --bbox-score 0.2 --out-dir out/custom_demo_det_vis
+torchpack dist-run -np 1 python tools/visualize.py configs/nuscenes/seg/custom_demo_fusion-bev256d2-lss.yaml --mode pred --checkpoint pretrained/bevfusion-seg.pth --map-score 0.5 --out-dir out/custom_demo_seg_vis
+```
+
+Note that the detection checkpoint predicts the 10 nuScenes classes and the map
+checkpoint predicts the 6 nuScenes map classes. Metrics against custom labels are
+only meaningful for labels whose semantics match those official classes.
+
+If your converted pkl files are under a clip directory, for example
+`data/clip_xxx/custom_dataset_infos_val.pkl`, either change `dataset_root` in
+the two override configs to `data/clip_xxx/`, or pass the evaluated annotation
+paths directly:
+
+```bash
+torchpack dist-run -np 1 python tools/test.py configs/nuscenes/det/transfusion/secfpn/camera+lidar/swint_v0p075/custom_demo.yaml pretrained/bevfusion-det.pth --out out/custom_demo_det.pkl --cfg-options data.test.dataset_root=data/clip_xxx/ data.test.ann_file=data/clip_xxx/custom_dataset_infos_val.pkl
+torchpack dist-run -np 1 python tools/test.py configs/nuscenes/seg/custom_demo_fusion-bev256d2-lss.yaml pretrained/bevfusion-seg.pth --out out/custom_demo_seg.pkl --cfg-options data.test.dataset_root=data/clip_xxx/ data.test.ann_file=data/clip_xxx/custom_dataset_infos_val.pkl
+```
