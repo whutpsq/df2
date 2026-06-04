@@ -47,9 +47,16 @@ object_classes:
   - unknown_obstacle
 
 map_classes:
-  - lane
+  - solid_lane
+  - dashed_lane
+  - double_solid
+  - diversion_boundary
+  - centerline
+  - stopline
+  - crosswalk
   - roadside
-  - road_mark
+  - area
+  - arrow
 
 input_modality:
   use_lidar: true
@@ -400,7 +407,7 @@ momentum_config: null
 log_config:
   interval: 5
 
-max_epochs: 2
+max_epochs: 50
 runner:
   type: CustomEpochBasedRunner
   max_epochs: ${max_epochs}

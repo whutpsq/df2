@@ -385,44 +385,109 @@ class LoadCustomBEVSegmentation:
                 return points
         return []
 
+    @staticmethod
+    def _extract_json_object(text, key):
+        key_pos = text.find('"%s"' % key)
+        if key_pos < 0:
+            return {}
+        colon_pos = text.find(":", key_pos)
+        start_pos = text.find("{", colon_pos)
+        if colon_pos < 0 or start_pos < 0:
+            return {}
+
+        depth = 0
+        in_string = False
+        escaped = False
+        for pos in range(start_pos, len(text)):
+            char = text[pos]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return json.loads(text[start_pos : pos + 1])
+        return {}
+
+    @classmethod
+    def _load_lanelines_annotation(cls, ann_path):
+        with open(ann_path, "r", encoding="utf-8") as f:
+            text = f.read()
+
+        try:
+            return json.loads(text).get("lanelines_annotation", {})
+        except json.JSONDecodeError:
+            return cls._extract_json_object(text, "lanelines_annotation")
+
+    @staticmethod
+    def _lane_class_name(lane):
+        label = lane.get("label", "")
+        if label == "LANELINE":
+            return lane.get("type", "").lower()
+        return label.lower()
+
+    @staticmethod
+    def _road_mark_class_name(mark):
+        return mark.get("label", "").lower()
+
+    def _draw_to_first_available_class(
+        self, labels, class_to_idx, names, points, polygon=False
+    ):
+        for name in names:
+            if name in class_to_idx:
+                if polygon:
+                    self._draw_polygon(labels[class_to_idx[name]], points)
+                else:
+                    self._draw_polyline(labels[class_to_idx[name]], points)
+                return
+
     def __call__(self, data: Dict[str, Any]) -> Dict[str, Any]:
         ann_path = data.get("ann_path")
         if ann_path is None:
             raise KeyError("LoadCustomBEVSegmentation requires ann_path in data info.")
 
-        with open(ann_path, "r", encoding="utf-8") as f:
-            ann = json.load(f)
-
         h, w = self.canvas_size
         labels = np.zeros((len(self.classes), h, w), dtype=np.uint8)
-        map_ann = ann.get("lanelines_annotation", {})
+        map_ann = self._load_lanelines_annotation(ann_path)
         class_to_idx = {name: i for i, name in enumerate(self.classes)}
         lidar_aug_matrix = data.get("lidar_aug_matrix", np.eye(4, dtype=np.float32))
 
         for lane in map_ann.get("lane", []):
             points = self._transform_points(lane.get("geo_3d", []), lidar_aug_matrix)
-            label = lane.get("label", "")
-            if label == "LANELINE":
-                for name in ("lane", "divider"):
-                    if name in class_to_idx:
-                        self._draw_polyline(labels[class_to_idx[name]], points)
-            elif label == "ROADSIDE":
-                for name in ("roadside", "divider"):
-                    if name in class_to_idx:
-                        self._draw_polyline(labels[class_to_idx[name]], points)
+            class_name = self._lane_class_name(lane)
+            legacy_names = (
+                ("lane", "divider") if lane.get("label", "") == "LANELINE" else ()
+            )
+            self._draw_to_first_available_class(
+                labels, class_to_idx, (class_name, *legacy_names), points
+            )
 
         for mark in map_ann.get("road_mark", []):
             points = self._transform_points(self._road_mark_points(mark), lidar_aug_matrix)
-            label = mark.get("label", "")
-            if label == "AREA":
-                for name in ("road_mark", "drivable_area"):
-                    if name in class_to_idx:
-                        self._draw_polygon(labels[class_to_idx[name]], points)
-            elif label == "ARROW":
-                if "road_mark" in class_to_idx:
-                    self._draw_polygon(labels[class_to_idx["road_mark"]], points)
-            elif "road_mark" in class_to_idx:
-                self._draw_polyline(labels[class_to_idx["road_mark"]], points)
+            class_name = self._road_mark_class_name(mark)
+            polygon = mark.get("label", "") in ("AREA", "ARROW")
+            legacy_names = (
+                ("road_mark", "drivable_area")
+                if mark.get("label", "") == "AREA"
+                else ("road_mark",)
+            )
+            self._draw_to_first_available_class(
+                labels,
+                class_to_idx,
+                (class_name, *legacy_names),
+                points,
+                polygon=polygon,
+            )
 
         data["gt_masks_bev"] = labels.astype(np.int64)
         return data

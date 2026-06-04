@@ -178,7 +178,7 @@ model:
       bn_momentum: 0.1
       activation: relu
       train_cfg:
-        dataset: nuScenes
+        dataset: custom
         point_cloud_range: ${point_cloud_range}
         grid_size: [512, 512, 1]
         voxel_size: ${voxel_size}
@@ -204,7 +204,7 @@ model:
             type: IoU3DCost
             weight: 0.25
       test_cfg:
-        dataset: nuScenes
+        dataset: custom
         grid_size: [512, 512, 1]
         out_size_factor: 8
         voxel_size: ${voxel_size[:2]}
@@ -220,7 +220,7 @@ model:
         type: TransFusionBBoxCoder
         pc_range: ${point_cloud_range[:2]}
         post_center_range: [-61.2, -61.2, -10.0, 61.2, 61.2, 10.0]
-        score_threshold: 0.0
+        score_threshold: 0.2
         out_size_factor: 8
         voxel_size: ${voxel_size[:2]}
         code_size: 10
