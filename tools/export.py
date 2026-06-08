@@ -16,6 +16,8 @@ from mmdet.apis import multi_gpu_test, set_random_seed
 from mmdet.datasets import replace_ImageToTensor
 from onnxsim import simplify
 from tqdm import tqdm
+from torchpack.utils.config import configs
+from mmdet3d.utils import recursive_eval
 
 
 def parse_args():
@@ -40,7 +42,11 @@ def parse_args():
 def main():
     args = parse_args()
 
-    cfg = Config.fromfile(args.config)
+
+    configs.load(args.config, recursive=True)
+    cfg = Config(recursive_eval(configs), filename=args.config)
+
+    # cfg = Config.fromfile(args.config)
     if args.cfg_options is not None:
         cfg.merge_from_dict(args.cfg_options)
 

@@ -1,0 +1,3 @@
+bash_script_config:
+  command: "cd /opt/bevfusion && python3 -m deploy_rscl.rscl_node --adapter-config deploy_rscl/configs/bevfusion_rscl.yaml"
+

@@ -24,13 +24,6 @@
           </mappings>
         </serverdata>
       </paths>
-      <paths name="gzyc@192.168.247.155:22 password (2)">
-        <serverdata>
-          <mappings>
-            <mapping local="$PROJECT_DIR$" web="/" />
-          </mappings>
-        </serverdata>
-      </paths>
       <paths name="gzyc@192.168.247.155:22 password (3)">
         <serverdata>
           <mappings>

@@ -1,0 +1,46 @@
+config_path: "../../configs/custom_dataset/default.yaml"
+checkpoint_path: "../../runs/detect/latest.pth"
+node_name: "bevfusion_rscl"
+module_name: "bevfusion_rscl"
+device: "cuda:0"
+
+input_message_type: "RawMessage"
+output_message_type: "RawMessage"
+
+camera_topics:
+  - "/sensor/camera/center_camera_fov120/encode"
+  - "/sensor/camera/left_front_camera/encode"
+  - "/sensor/camera/right_front_camera/encode"
+  - "/sensor/camera/rear_camera/encode"
+  - "/sensor/camera/left_rear_camera/encode"
+  - "/sensor/camera/right_rear_camera/encode"
+camera_order:
+  - "front"
+  - "front_left"
+  - "front_right"
+  - "rear"
+  - "rear_left"
+  - "rear_right"
+lidar_topic: "/perception/lidar/preproc_points_cloud"
+output_topic: "/perception/bevfusion/objects"
+
+sync_tolerance_ms: 50.0
+score_threshold: 0.2
+publish_empty_frame: true
+
+image_size: [128, 352]
+image_resize: 0.48
+image_mean: [0.485, 0.456, 0.406]
+image_std: [0.229, 0.224, 0.225]
+point_dim: 4
+point_cloud_range: [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
+
+# Replace this with the real vehicle calibration yaml/json.
+# If omitted, identity matrices are used only to keep the x86 POC runnable.
+calibration_file:
+
+# Optional offline rsclbag runner settings. These can also be passed as CLI args:
+#   python3 -m deploy_rscl.rscl_bag_runner --bag /path/to/mybag.000.rsclbag --decode-only
+bag_path:
+max_frames:
+output_file:
