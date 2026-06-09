@@ -86,6 +86,87 @@ class LoadMultiViewImageFromFiles:
 
 
 @PIPELINES.register_module()
+class ResizeCropMultiViewImageToFixedSize:
+    """Resize and crop multi-view images to a common raw resolution.
+
+    This transform is intended for datasets whose cameras have different raw
+    resolutions. It updates the camera intrinsics to match the resized/cropped
+    images, so subsequent image augmentations can assume a single ori_shape.
+    """
+
+    def __init__(self, size=(1080, 1920), crop_mode="bottom"):
+        self.size = tuple(size)
+        self.crop_mode = crop_mode
+        if len(self.size) != 2:
+            raise ValueError("size must be [height, width]")
+        if self.crop_mode not in ("center", "bottom"):
+            raise ValueError("crop_mode must be 'center' or 'bottom'")
+
+    def __call__(self, results):
+        target_h, target_w = self.size
+        new_imgs = []
+        img_preprocess_mats = []
+
+        for img in results["img"]:
+            width, height = img.size
+            scale = max(target_w / width, target_h / height)
+            resized_w = int(round(width * scale))
+            resized_h = int(round(height * scale))
+
+            crop_x = max(0, (resized_w - target_w) // 2)
+            if self.crop_mode == "bottom":
+                crop_y = max(0, resized_h - target_h)
+            else:
+                crop_y = max(0, (resized_h - target_h) // 2)
+
+            resized = img.resize((resized_w, resized_h), Image.BILINEAR)
+            cropped = resized.crop(
+                (crop_x, crop_y, crop_x + target_w, crop_y + target_h)
+            )
+            new_imgs.append(cropped)
+
+            mat = np.eye(4, dtype=np.float32)
+            mat[0, 0] = scale
+            mat[1, 1] = scale
+            mat[0, 2] = -crop_x
+            mat[1, 2] = -crop_y
+            img_preprocess_mats.append(mat)
+
+        results["img"] = new_imgs
+        results["raw_ori_shape"] = results.get("ori_shape")
+        results["img_shape"] = (target_w, target_h)
+        results["ori_shape"] = (target_w, target_h)
+        results["pad_shape"] = (target_w, target_h)
+        results["img_preprocess_matrix"] = img_preprocess_mats
+
+        if "camera_intrinsics" in results:
+            camera_intrinsics = []
+            for intrinsic, mat in zip(
+                results["camera_intrinsics"], img_preprocess_mats
+            ):
+                intrinsic = np.asarray(intrinsic, dtype=np.float32).copy()
+                intrinsic[:3, :3] = mat[:3, :3] @ intrinsic[:3, :3]
+                camera_intrinsics.append(intrinsic)
+            results["camera_intrinsics"] = camera_intrinsics
+
+        if "lidar2camera" in results and "camera_intrinsics" in results:
+            results["lidar2image"] = [
+                intrinsic @ lidar2camera
+                for intrinsic, lidar2camera in zip(
+                    results["camera_intrinsics"], results["lidar2camera"]
+                )
+            ]
+
+        return results
+
+    def __repr__(self):
+        return (
+            f"{self.__class__.__name__}(size={self.size}, "
+            f"crop_mode='{self.crop_mode}')"
+        )
+
+
+@PIPELINES.register_module()
 class LoadPointsFromMultiSweeps:
     """Load points from multiple sweeps.
 
