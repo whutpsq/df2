@@ -114,6 +114,7 @@ test_pipeline:
   -
     type: LoadMultiViewImageFromFiles
     to_float32: true
+    undistort: true
   -
     type: LoadPointsFromFile
     coord_type: LIDAR
@@ -168,6 +169,7 @@ test_pipeline:
       - gt_masks_bev
     meta_keys:
       - camera_intrinsics
+      - camera_distortions_applied
       - camera2ego
       - lidar2ego
       - lidar2camera

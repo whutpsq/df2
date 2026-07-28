@@ -30,11 +30,84 @@ class LoadMultiViewImageFromFiles:
         to_float32 (bool): Whether to convert the img to float32.
             Defaults to False.
         color_type (str): Color type of the file. Defaults to 'unchanged'.
+        undistort (bool): Whether to rectify every camera image with its K+D
+            before resize/crop and image augmentation. Defaults to False.
     """
 
-    def __init__(self, to_float32=False, color_type="unchanged"):
+    def __init__(self, to_float32=False, color_type="unchanged", undistort=False):
         self.to_float32 = to_float32
         self.color_type = color_type
+        self.undistort = undistort
+        # Fixed-point remap tables are cached per worker and calibration.
+        self._undistort_maps = {}
+
+    def _undistort_images(self, images, results):
+        if not self.undistort:
+            return images
+
+        intrinsics = results.get("camera_intrinsics")
+        distortions = results.get("camera_distortions")
+        if intrinsics is None or distortions is None:
+            raise KeyError(
+                "undistort=True requires camera_intrinsics and "
+                "camera_distortions. Regenerate custom dataset PKLs with "
+                "custom_dataset_converter.py."
+            )
+        if not (len(images) == len(intrinsics) == len(distortions)):
+            raise ValueError(
+                "image/intrinsic/distortion view counts differ: "
+                f"{len(images)}/{len(intrinsics)}/{len(distortions)}"
+            )
+
+        rectified = []
+        for view_index, (image, intrinsic, distortion) in enumerate(
+            zip(images, intrinsics, distortions)
+        ):
+            if distortion is None:
+                raise ValueError(
+                    f"camera view {view_index} has no distortion coefficients"
+                )
+            camera_matrix = np.asarray(intrinsic, dtype=np.float64)[:3, :3]
+            distortion = np.asarray(distortion, dtype=np.float64).reshape(-1)
+            if camera_matrix.shape != (3, 3):
+                raise ValueError(
+                    f"camera view {view_index} intrinsic must be 3x3 or 4x4"
+                )
+            if distortion.shape != (8,) or not np.isfinite(distortion).all():
+                raise ValueError(
+                    f"camera view {view_index} distortion must be 8 finite "
+                    "values in k1,k2,p1,p2,k3,k4,k5,k6 order"
+                )
+
+            cache_key = (
+                image.size,
+                camera_matrix.tobytes(),
+                distortion.tobytes(),
+            )
+            maps = self._undistort_maps.get(cache_key)
+            if maps is None:
+                maps = cv2.initUndistortRectifyMap(
+                    camera_matrix,
+                    distortion,
+                    None,
+                    camera_matrix,
+                    image.size,
+                    cv2.CV_16SC2,
+                )
+                self._undistort_maps[cache_key] = maps
+
+            image_array = np.asarray(image)
+            rectified_array = cv2.remap(
+                image_array,
+                maps[0],
+                maps[1],
+                interpolation=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT,
+            )
+            rectified.append(Image.fromarray(rectified_array))
+
+        results["camera_distortions_applied"] = True
+        return rectified
 
     def __call__(self, results):
         """Call function to load multi-view image from files.
@@ -61,7 +134,8 @@ class LoadMultiViewImageFromFiles:
         h, w = 0, 0
         for name in filename:
             images.append(Image.open(name))
-        
+        images = self._undistort_images(images, results)
+
         #TODO: consider image padding in waymo
 
         results["filename"] = filename
@@ -81,7 +155,9 @@ class LoadMultiViewImageFromFiles:
         """str: Return a string that describes the module."""
         repr_str = self.__class__.__name__
         repr_str += f"(to_float32={self.to_float32}, "
-        repr_str += f"color_type='{self.color_type}')"
+        repr_str += (
+            f"color_type='{self.color_type}', undistort={self.undistort})"
+        )
         return repr_str
 
 
@@ -448,7 +524,7 @@ class LoadCustomBEVSegmentation:
             isClosed=False,
             color=1,
             thickness=width or self.line_width,
-            lineType=cv2.LINE_AA,
+            lineType=cv2.LINE_8,
         )
 
     def _draw_polygon(self, mask, points):
@@ -460,7 +536,15 @@ class LoadCustomBEVSegmentation:
     @staticmethod
     def _road_mark_points(mark):
         geo_3d = mark.get("geo_3d", {})
-        for key in ("geo_rbbox", "geo_arrowpoints_list", "geo_keypoints_list"):
+        label = str(mark.get("label", "")).upper()
+        if label == "ARROW":
+            keys = ("geo_arrowpoints_list", "geo_keypoints_list", "geo_rbbox")
+        elif label == "AREA":
+            keys = ("geo_keypoints_list", "geo_rbbox", "geo_arrowpoints_list")
+        else:
+            keys = ("geo_rbbox", "geo_keypoints_list", "geo_arrowpoints_list")
+
+        for key in keys:
             points = geo_3d.get(key, [])
             if points:
                 return points

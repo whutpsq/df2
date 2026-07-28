@@ -1,0 +1,293 @@
+# Joint 3D object detection + 8-class BEV map segmentation with Focal + Dice.
+#
+# This file is recursively merged on top of:
+#   configs/default.yaml
+#   configs/custom_dataset/default.yaml
+# Therefore the complete camera/lidar encoders, decoder and TransFusion object
+# head come from custom_dataset/default.yaml; only the map task and the joint
+# data pipelines are added here.
+
+map_classes:
+  - solid_lane
+  - dashed_lane
+  - double_solid
+  - diversion_boundary
+  - stopline
+  - crosswalk
+  - roadside
+  - arrow
+
+# Shared camera/BEV augmentation must remain mild: the one-clip ablation showed
+# that the original strong augmentation prevented thin map classes from fitting.
+augment2d:
+  resize: [[0.38, 0.42], [0.40, 0.40]]
+  rotate: [-2.0, 2.0]
+  gridmask:
+    prob: 0.0
+    fixed_prob: true
+
+augment3d:
+  scale: [0.98, 1.02]
+  rotate: [-0.17453293, 0.17453293]
+  translate: 0.2
+
+model:
+  # Start with equal task weights. Adjust these only after comparing the two
+  # loss magnitudes in the training log.
+  loss_scale:
+    object: 1.0
+    map: 1.0
+  heads:
+    map:
+      type: BEVSegmentationHead
+      in_channels: 512
+      grid_transform:
+        input_scope:
+          - [-51.2, 51.2, 0.8]
+          - [-51.2, 51.2, 0.8]
+        output_scope:
+          - [-50.0, 50.0, 0.5]
+          - [-50.0, 50.0, 0.5]
+        prescale_factor: 1
+      classes: ${map_classes}
+      loss: focal_dice
+      focal_alpha: -1.0
+      focal_gamma: 2.0
+      focal_weight: 1.0
+      dice_weight: 1.0
+      dice_smooth: 1.0
+
+train_pipeline:
+  -
+    type: LoadMultiViewImageFromFiles
+    to_float32: true
+    undistort: true
+  -
+    type: ResizeCropMultiViewImageToFixedSize
+    size: [1080, 1920]
+    crop_mode: bottom
+  -
+    type: LoadPointsFromFile
+    coord_type: LIDAR
+    load_dim: ${load_dim}
+    use_dim: ${use_dim}
+    reduce_beams: ${reduce_beams}
+    load_augmented: ${load_augmented}
+  -
+    type: LoadPointsFromMultiSweeps
+    sweeps_num: 0
+    load_dim: ${load_dim}
+    use_dim: ${use_dim}
+    reduce_beams: ${reduce_beams}
+    pad_empty_sweeps: true
+    remove_close: true
+    load_augmented: ${load_augmented}
+  -
+    type: LoadAnnotations3D
+    with_bbox_3d: true
+    with_label_3d: true
+    with_attr_label: false
+  -
+    type: ImageAug3D
+    final_dim: ${image_size}
+    resize_lim: ${augment2d.resize[0]}
+    bot_pct_lim: [0.0, 0.0]
+    rot_lim: ${augment2d.rotate}
+    rand_flip: false
+    is_train: true
+  -
+    type: GlobalRotScaleTrans
+    resize_lim: ${augment3d.scale}
+    rot_lim: ${augment3d.rotate}
+    trans_lim: ${augment3d.translate}
+    is_train: true
+  -
+    type: LoadCustomBEVSegmentation
+    xbound: [-50.0, 50.0, 0.5]
+    ybound: [-50.0, 50.0, 0.5]
+    classes: ${map_classes}
+    line_width: 2
+  -
+    type: PointsRangeFilter
+    point_cloud_range: ${point_cloud_range}
+  -
+    type: PointSample
+    num_points: 60000
+  -
+    type: ObjectRangeFilter
+    point_cloud_range: ${point_cloud_range}
+  -
+    type: ObjectNameFilter
+    classes: ${object_classes}
+  -
+    type: ImageNormalize
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]
+  -
+    type: GridMask
+    use_h: true
+    use_w: true
+    max_epoch: ${max_epochs}
+    rotate: 1
+    offset: false
+    ratio: 0.5
+    mode: 1
+    prob: ${augment2d.gridmask.prob}
+    fixed_prob: ${augment2d.gridmask.fixed_prob}
+  -
+    type: PointShuffle
+  -
+    type: DefaultFormatBundle3D
+    classes: ${object_classes}
+  -
+    type: Collect3D
+    keys:
+      - img
+      - points
+      - gt_bboxes_3d
+      - gt_labels_3d
+      - gt_masks_bev
+    meta_keys:
+      - camera_intrinsics
+      - camera2ego
+      - lidar2ego
+      - lidar2camera
+      - camera2lidar
+      - lidar2image
+      - img_aug_matrix
+      - lidar_aug_matrix
+
+test_pipeline:
+  -
+    type: LoadMultiViewImageFromFiles
+    to_float32: true
+    undistort: true
+  -
+    type: ResizeCropMultiViewImageToFixedSize
+    size: [1080, 1920]
+    crop_mode: bottom
+  -
+    type: LoadPointsFromFile
+    coord_type: LIDAR
+    load_dim: ${load_dim}
+    use_dim: ${use_dim}
+    reduce_beams: ${reduce_beams}
+    load_augmented: ${load_augmented}
+  -
+    type: LoadPointsFromMultiSweeps
+    sweeps_num: 0
+    load_dim: ${load_dim}
+    use_dim: ${use_dim}
+    reduce_beams: ${reduce_beams}
+    pad_empty_sweeps: true
+    remove_close: true
+    load_augmented: ${load_augmented}
+  -
+    type: LoadAnnotations3D
+    with_bbox_3d: true
+    with_label_3d: true
+    with_attr_label: false
+  -
+    type: ImageAug3D
+    final_dim: ${image_size}
+    resize_lim: ${augment2d.resize[1]}
+    bot_pct_lim: [0.0, 0.0]
+    rot_lim: [0.0, 0.0]
+    rand_flip: false
+    is_train: false
+  -
+    type: GlobalRotScaleTrans
+    resize_lim: [1.0, 1.0]
+    rot_lim: [0.0, 0.0]
+    trans_lim: 0.0
+    is_train: false
+  -
+    type: LoadCustomBEVSegmentation
+    xbound: [-50.0, 50.0, 0.5]
+    ybound: [-50.0, 50.0, 0.5]
+    classes: ${map_classes}
+    line_width: 2
+  -
+    type: PointsRangeFilter
+    point_cloud_range: ${point_cloud_range}
+  -
+    type: ObjectRangeFilter
+    point_cloud_range: ${point_cloud_range}
+  -
+    type: ObjectNameFilter
+    classes: ${object_classes}
+  -
+    type: ImageNormalize
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]
+  -
+    type: DefaultFormatBundle3D
+    classes: ${object_classes}
+  -
+    type: Collect3D
+    keys:
+      - img
+      - points
+      - gt_bboxes_3d
+      - gt_labels_3d
+      - gt_masks_bev
+    meta_keys:
+      - camera_intrinsics
+      - camera2ego
+      - lidar2ego
+      - lidar2camera
+      - camera2lidar
+      - lidar2image
+      - img_aug_matrix
+      - lidar_aug_matrix
+
+data:
+  # Two heads require more memory than either single-task config. This is a
+  # conservative default; increase after checking actual GPU memory usage.
+  # Four samples per GPU is a conservative joint-training starting point.
+  # Increase only after checking memory; Dice benefits from larger local batches.
+  samples_per_gpu: 4
+  workers_per_gpu: 4
+  train:
+    # The dedicated joint PKL keeps only samples with both map and object
+    # annotation sources; genuine empty-object frames remain valid negatives.
+    ann_file: ${dataset_write_root + "custom_dataset_joint_infos_train.pkl"}
+    pipeline: ${train_pipeline}
+    # TransFusion's assigner cannot concatenate max_overlaps for an empty GT
+    # sample, so joint training must resample frames with no valid 3D objects.
+    filter_empty_gt: true
+    test_mode: false
+  val:
+    ann_file: ${dataset_write_root + "custom_dataset_joint_infos_val.pkl"}
+    pipeline: ${test_pipeline}
+    filter_empty_gt: false
+    test_mode: true
+  test:
+    ann_file: ${dataset_write_root + "custom_dataset_joint_infos_val.pkl"}
+    pipeline: ${test_pipeline}
+    filter_empty_gt: false
+    test_mode: true
+
+# The successful single-task runs used a global batch of 20 at lr=1e-4.
+# With 2 GPUs x 4 samples, linear scaling gives 4e-5.
+optimizer:
+  type: AdamW
+  lr: 4.0e-5
+  weight_decay: 0.01
+  paramwise_cfg:
+    custom_keys:
+      absolute_pos_embed:
+        decay_mult: 0
+      relative_position_bias_table:
+        decay_mult: 0
+      encoders.camera.backbone:
+        lr_mult: 0.1
+
+evaluation:
+  interval: 1
+  pipeline: ${test_pipeline}
+
+max_epochs: 50
+runner:
+  type: CustomEpochBasedRunner
+  max_epochs: ${max_epochs}

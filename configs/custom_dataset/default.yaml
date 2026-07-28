@@ -1,5 +1,6 @@
 dataset_type: NuScenesDataset
 dataset_root: data/
+dataset_write_root: data_write/
 
 gt_paste_stop_epoch: 0
 reduce_beams: null
@@ -246,6 +247,7 @@ train_pipeline:
   -
     type: LoadMultiViewImageFromFiles
     to_float32: true
+    undistort: true
   -
     type: ResizeCropMultiViewImageToFixedSize
     size: [1080, 1920]
@@ -340,6 +342,7 @@ test_pipeline:
   -
     type: LoadMultiViewImageFromFiles
     to_float32: true
+    undistort: true
   -
     type: ResizeCropMultiViewImageToFixedSize
     size: [1080, 1920]
@@ -407,12 +410,12 @@ test_pipeline:
       - lidar_aug_matrix
 
 data:
-  samples_per_gpu: 1
-  workers_per_gpu: 2
+  samples_per_gpu: 10
+  workers_per_gpu: 20
   train:
     type: ${dataset_type}
     dataset_root: ${dataset_root}
-    ann_file: ${dataset_root + "custom_dataset_infos_train.pkl"}
+    ann_file: ${dataset_write_root + "custom_dataset_infos_train.pkl"}
     pipeline: ${train_pipeline}
     object_classes: ${object_classes}
     map_classes: ${map_classes}
@@ -423,7 +426,7 @@ data:
   val:
     type: ${dataset_type}
     dataset_root: ${dataset_root}
-    ann_file: ${dataset_root + "custom_dataset_infos_val.pkl"}
+    ann_file: ${dataset_write_root + "custom_dataset_infos_val.pkl"}
     pipeline: ${test_pipeline}
     object_classes: ${object_classes}
     map_classes: ${map_classes}
@@ -434,7 +437,7 @@ data:
   test:
     type: ${dataset_type}
     dataset_root: ${dataset_root}
-    ann_file: ${dataset_root + "custom_dataset_infos_val.pkl"}
+    ann_file: ${dataset_write_root + "custom_dataset_infos_val.pkl"}
     pipeline: ${test_pipeline}
     object_classes: ${object_classes}
     map_classes: ${map_classes}

@@ -5,6 +5,7 @@ test_pipeline:
   -
     type: LoadMultiViewImageFromFiles
     to_float32: true
+    undistort: true
   -
     type: LoadPointsFromFile
     coord_type: LIDAR
@@ -59,6 +60,7 @@ test_pipeline:
       - gt_labels_3d
     meta_keys:
       - camera_intrinsics
+      - camera_distortions_applied
       - camera2ego
       - lidar2ego
       - lidar2camera

@@ -258,6 +258,7 @@ class NuScenesDataset(Custom3DDataset):
             data["camera2ego"] = []
             data["camera_intrinsics"] = []
             data["camera2lidar"] = []
+            data["camera_distortions"] = []
 
             for _, camera_info in info["cams"].items():
                 data["image_paths"].append(camera_info["data_path"])
@@ -277,6 +278,34 @@ class NuScenesDataset(Custom3DDataset):
                 camera_intrinsics[:3, :3] = camera_info["cam_intrinsic"]
                 data["camera_intrinsics"].append(camera_intrinsics)
 
+                # Custom clips store OpenCV rational-model coefficients in
+                # k1,k2,p1,p2,k3,k4,k5,k6 order. Keep one entry per view so
+                # image loading can apply K+D before resize/crop/augmentation.
+                distortion = camera_info.get("distortion")
+                if (
+                    distortion is None
+                    and camera_info.get("distortion_coefficients")
+                ):
+                    coefficients = camera_info["distortion_coefficients"]
+                    distortion = [
+                        coefficients[name]
+                        for name in (
+                            "k1",
+                            "k2",
+                            "p1",
+                            "p2",
+                            "k3",
+                            "k4",
+                            "k5",
+                            "k6",
+                        )
+                    ]
+                data["camera_distortions"].append(
+                    None
+                    if distortion is None
+                    else np.asarray(distortion, dtype=np.float32).reshape(-1)
+                )
+
                 # lidar to image transform
                 lidar2image = camera_intrinsics @ lidar2camera_rt.T
                 data["lidar2image"].append(lidar2image)
@@ -294,6 +323,9 @@ class NuScenesDataset(Custom3DDataset):
                 camera2lidar[:3, :3] = camera_info["sensor2lidar_rotation"]
                 camera2lidar[:3, 3] = camera_info["sensor2lidar_translation"]
                 data["camera2lidar"].append(camera2lidar)
+
+            if all(item is None for item in data["camera_distortions"]):
+                data.pop("camera_distortions")
 
         annos = self.get_ann_info(index)
         data["ann_info"] = annos

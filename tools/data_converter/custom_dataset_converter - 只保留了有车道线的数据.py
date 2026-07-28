@@ -1,13 +1,9 @@
 """Convert custom clip datasets into BEVFusion nuScenes-style infos.
 
-This converter keeps the training code on the existing NuScenesDataset path.
-Detection and lane-segmentation annotations are selected independently:
-
-* ``<prefix>_infos_{train,val}.pkl`` contains samples with 3D object labels;
-* ``<prefix>_seg_infos_{train,val}.pkl`` contains samples with lane/map labels.
-
-Missing labels for one task do not discard otherwise usable samples for the
-other task. Converted point clouds are shared by both outputs.
+This converter keeps the training code on the existing NuScenesDataset path:
+it reads the custom sample/annotation JSON files from one clip or a directory
+of clips, converts compressed PCD point clouds to float32 .bin files, and
+writes the info pkl files consumed by the current BEVFusion pipelines.
 """
 
 import argparse
@@ -408,7 +404,7 @@ def resolve_annotation_path(root_path, token, annotation_dir="sample_annotation"
     raise FileNotFoundError(candidates[0])
 
 
-def resolve_map_annotation_path(root_path, token, object_ann_path=None):
+def resolve_map_annotation_path(root_path, token, object_ann_path):
     """Resolve map labels and reject object-only JSON files.
 
     New data stores map labels under road-surface-element-4dbev. Legacy data
@@ -420,13 +416,8 @@ def resolve_map_annotation_path(root_path, token, object_ann_path=None):
         map_ann_path = resolve_annotation_path(
             root_path, token, "road-surface-element-4dbev"
         )
-    elif object_ann_path is not None:
-        map_ann_path = object_ann_path
     else:
-        expected_path = osp.join(
-            map_dir, sample_token_to_annotation_files(token)[0]
-        )
-        raise FileNotFoundError(expected_path)
+        map_ann_path = object_ann_path
 
     with open(map_ann_path, "r", encoding="utf-8-sig") as f:
         annotation = json.load(f)
@@ -585,22 +576,49 @@ def build_annotations(ann):
     )
 
 
-def annotation_info_fields(ann):
-    """Build the NuScenes-style annotation fields required by the dataset."""
-    if ann is None:
-        return {
-            "gt_boxes": np.zeros((0, 7), dtype=np.float32),
-            "gt_names": np.asarray([], dtype=str),
-            "gt_velocity": np.zeros((0, 2), dtype=np.float32),
-            "num_lidar_pts": np.zeros((0,), dtype=np.int32),
-            "num_radar_pts": np.zeros((0,), dtype=np.int32),
-            "valid_flag": np.zeros((0,), dtype=bool),
-        }
-
-    gt_boxes, gt_names, gt_velocity, num_lidar_pts, valid_flag = (
-        build_annotations(ann)
+def build_info(
+    root_path,
+    sample,
+    calibration,
+    points_output_root,
+    skip_pcd_convert=False,
+    clip_id=None,
+):
+    object_ann_path = resolve_annotation_path(
+        root_path, sample["sample_annotation"], "sample_annotation"
     )
+    map_ann_path = resolve_map_annotation_path(
+        root_path, sample["sample_annotation"], object_ann_path
+    )
+    with open(object_ann_path, "r", encoding="utf-8") as f:
+        ann = json.load(f)
+
+    lidar2ego = calibration["lidar2ego"]
+    # No pose is provided; both boxes and map labels use the LiDAR frame.
+    ego2global = IDENTITY_TRANSFORM
+    timestamp = sample_timestamp_ns(ann, sample)
+    lidar_path = convert_points(root_path, sample, points_output_root, skip_pcd_convert)
+    gt_boxes, gt_names, gt_velocity, num_lidar_pts, valid_flag = build_annotations(ann)
+
     return {
+        "lidar_path": lidar_path,
+        "token": make_unique_token(clip_id, sample["sample_annotation"]),
+        "sweeps": [],
+        "cams": build_cams(
+            root_path, sample, calibration, lidar2ego, timestamp, ego2global, clip_id
+        ),
+        "lidar2ego_translation": lidar2ego[:3, 3].tolist(),
+        "lidar2ego_rotation": matrix_to_quaternion(lidar2ego),
+        "ego2global_translation": ego2global[:3, 3].tolist(),
+        "ego2global_rotation": matrix_to_quaternion(ego2global),
+        "timestamp": timestamp,
+        # LoadCustomBEVSegmentation reads ann_path; detection labels are
+        # embedded in this info and keep their original path for traceability.
+        "ann_path": map_ann_path,
+        "object_ann_path": object_ann_path,
+        "prev_token": make_unique_token(clip_id, sample.get("prev")),
+        "next_token": make_unique_token(clip_id, sample.get("next")),
+        "location": "custom" if clip_id is None else clip_id,
         "gt_boxes": gt_boxes,
         "gt_names": gt_names,
         "gt_velocity": gt_velocity,
@@ -608,151 +626,6 @@ def annotation_info_fields(ann):
         "num_radar_pts": np.zeros(len(gt_boxes), dtype=np.int32),
         "valid_flag": valid_flag,
     }
-
-
-def build_common_info(
-    root_path,
-    sample,
-    calibration,
-    points_output_root,
-    reference_ann,
-    skip_pcd_convert=False,
-    clip_id=None,
-):
-    """Build sensor fields shared by detection and segmentation PKLs."""
-    lidar2ego = calibration["lidar2ego"]
-    ego2global = IDENTITY_TRANSFORM
-    timestamp = sample_timestamp_ns(reference_ann, sample)
-    lidar_path = convert_points(
-        root_path, sample, points_output_root, skip_pcd_convert
-    )
-    return {
-        "lidar_path": lidar_path,
-        "token": make_unique_token(clip_id, sample["sample_annotation"]),
-        "sweeps": [],
-        "cams": build_cams(
-            root_path,
-            sample,
-            calibration,
-            lidar2ego,
-            timestamp,
-            ego2global,
-            clip_id,
-        ),
-        "lidar2ego_translation": lidar2ego[:3, 3].tolist(),
-        "lidar2ego_rotation": matrix_to_quaternion(lidar2ego),
-        "ego2global_translation": ego2global[:3, 3].tolist(),
-        "ego2global_rotation": matrix_to_quaternion(ego2global),
-        "timestamp": timestamp,
-        "prev_token": make_unique_token(clip_id, sample.get("prev")),
-        "next_token": make_unique_token(clip_id, sample.get("next")),
-        "location": "custom" if clip_id is None else clip_id,
-    }
-
-
-def build_task_infos(
-    root_path,
-    sample,
-    calibration,
-    points_output_root,
-    skip_pcd_convert=False,
-    clip_id=None,
-):
-    """Build independent detection and segmentation infos for one sample."""
-    token = sample["sample_annotation"]
-    object_ann_path = None
-    map_ann_path = None
-    object_missing = None
-    map_missing = None
-
-    try:
-        object_ann_path = resolve_annotation_path(
-            root_path, token, "sample_annotation"
-        )
-    except FileNotFoundError as exc:
-        object_missing = exc.filename or str(exc)
-
-    try:
-        map_ann_path = resolve_map_annotation_path(
-            root_path, token, object_ann_path
-        )
-    except (
-        FileNotFoundError,
-        json.JSONDecodeError,
-        UnicodeDecodeError,
-        KeyError,
-        TypeError,
-        ValueError,
-    ) as exc:
-        map_missing = str(exc)
-        map_ann_path = None
-
-    object_ann = None
-    annotation_fields = annotation_info_fields(None)
-    if object_ann_path is not None:
-        try:
-            with open(object_ann_path, "r", encoding="utf-8-sig") as f:
-                object_ann = json.load(f)
-            annotation_fields = annotation_info_fields(object_ann)
-        except (
-            OSError,
-            json.JSONDecodeError,
-            UnicodeDecodeError,
-            KeyError,
-            TypeError,
-            ValueError,
-        ) as exc:
-            object_missing = str(exc)
-            object_ann_path = None
-            object_ann = None
-
-    map_ann = None
-    if map_ann_path is not None:
-        try:
-            with open(map_ann_path, "r", encoding="utf-8-sig") as f:
-                map_ann = json.load(f)
-        except (
-            OSError,
-            json.JSONDecodeError,
-            UnicodeDecodeError,
-            KeyError,
-            TypeError,
-            ValueError,
-        ) as exc:
-            map_missing = str(exc)
-            map_ann_path = None
-
-    if object_ann_path is None and map_ann_path is None:
-        return None, None, object_missing, map_missing
-
-    common = build_common_info(
-        root_path,
-        sample,
-        calibration,
-        points_output_root,
-        object_ann if object_ann is not None else map_ann,
-        skip_pcd_convert,
-        clip_id,
-    )
-
-    detection_info = None
-    if object_ann_path is not None:
-        detection_info = dict(common)
-        detection_info.update(annotation_fields)
-        detection_info["ann_path"] = object_ann_path
-        detection_info["object_ann_path"] = object_ann_path
-
-    segmentation_info = None
-    if map_ann_path is not None:
-        segmentation_info = dict(common)
-        # Segmentation training does not consume 3D boxes, but NuScenesDataset
-        # still expects these fields when test_mode=False. Use real boxes when
-        # available and correctly shaped empty arrays for map-only samples.
-        segmentation_info.update(annotation_fields)
-        segmentation_info["ann_path"] = map_ann_path
-        segmentation_info["object_ann_path"] = object_ann_path
-
-    return detection_info, segmentation_info, object_missing, map_missing
 
 
 def is_clip_root(path):
@@ -785,9 +658,8 @@ def load_clip_infos(
     skip_pcd_convert,
     show_progress=True,
 ):
-    """Load one clip into independent detection and segmentation info lists."""
     sample_path = osp.join(clip_root, "annotations", "sample.json")
-    with open(sample_path, "r", encoding="utf-8-sig") as f:
+    with open(sample_path, "r", encoding="utf-8") as f:
         samples = json.load(f)
     samples = sorted(samples, key=lambda x: Decimal(str(x["sample_annotation"])))
     calibration = load_calibration(clip_root)
@@ -797,59 +669,39 @@ def load_clip_infos(
         if show_progress and mmcv is not None
         else samples
     )
-    result = {
-        "detection": [],
-        "segmentation": [],
-        "missing_detection_samples": 0,
-        "missing_segmentation_samples": 0,
-        "samples_missing_both": 0,
-    }
+    infos = []
     for index, sample in enumerate(iterator):
         if show_progress and mmcv is None:
             print(
                 f"[{index + 1}/{len(samples)}] "
                 f"{clip_id}/{sample['sample_annotation']}"
             )
-
-        detection_info, segmentation_info, _, _ = build_task_infos(
-            clip_root,
-            sample,
-            calibration,
-            points_output_root,
-            skip_pcd_convert,
-            clip_id,
+        infos.append(
+            build_info(
+                clip_root,
+                sample,
+                calibration,
+                points_output_root,
+                skip_pcd_convert,
+                clip_id,
+            )
         )
-        if detection_info is None:
-            result["missing_detection_samples"] += 1
-        else:
-            result["detection"].append(detection_info)
-
-        if segmentation_info is None:
-            result["missing_segmentation_samples"] += 1
-        else:
-            result["segmentation"].append(segmentation_info)
-
-        if detection_info is None and segmentation_info is None:
-            result["samples_missing_both"] += 1
-
-    return result
+    return infos
 
 
 def process_clip_task(task):
     """Convert one clip in a worker process and return a serializable result."""
     clip_index, clip_root, clip_id, points_output_root, skip_pcd_convert = task
     try:
-        result = load_clip_infos(
+        infos = load_clip_infos(
             clip_root,
             clip_id,
             points_output_root,
             skip_pcd_convert,
             show_progress=False,
         )
-        return clip_index, clip_root, result, None
+        return clip_index, clip_root, infos, None
     except FileNotFoundError as exc:
-        # Label absence is handled inside load_clip_infos. Reaching here means
-        # a shared asset such as calibration, image, or point cloud is missing.
         return clip_index, clip_root, None, exc.filename or str(exc)
 
 
@@ -882,24 +734,6 @@ def split_infos_by_clip(clip_infos, split_ratio):
     return train_infos, val_infos
 
 
-def split_task_infos(ordered_clip_results, task_name, split_by, split_ratio):
-    """Split one task using only clips that provide labels for that task."""
-    task_clip_infos = []
-    for clip_root, result in ordered_clip_results:
-        infos = [] if result is None else result[task_name]
-        if infos:
-            task_clip_infos.append((clip_root, infos))
-
-    if split_by == "clip":
-        return split_infos_by_clip(task_clip_infos, split_ratio)
-
-    infos = []
-    for _, clip_info in task_clip_infos:
-        infos.extend(clip_info)
-    infos = sorted(infos, key=lambda x: (x["location"], x["timestamp"]))
-    return split_infos_by_sample(infos, split_ratio)
-
-
 def create_custom_infos(
     root_path,
     out_dir,
@@ -923,7 +757,7 @@ def create_custom_infos(
     )
 
     clip_results = [None] * len(clip_roots)
-    skipped_common_asset_clips = []
+    skipped_missing_file_clips = []
     tasks = []
     for clip_index, clip_root in enumerate(clip_roots):
         clip_id = osp.basename(osp.normpath(clip_root)) if multiple_clips else None
@@ -945,7 +779,7 @@ def create_custom_infos(
             clip_index, clip_root, clip_id, points_output_root, skip_pcd = task
             print(f"Processing clip {completed}/{len(tasks)}: {clip_root}")
             try:
-                result = load_clip_infos(
+                infos = load_clip_infos(
                     clip_root,
                     clip_id,
                     points_output_root,
@@ -954,130 +788,65 @@ def create_custom_infos(
                 )
             except FileNotFoundError as exc:
                 missing_path = exc.filename or str(exc)
-                skipped_common_asset_clips.append((clip_root, missing_path))
-                print(f"Skipping clip due to missing shared asset: {clip_root}")
+                skipped_missing_file_clips.append((clip_root, missing_path))
+                print(f"Skipping clip due to missing file: {clip_root}")
                 print(f"  Missing: {missing_path}")
             else:
-                clip_results[clip_index] = result
-                print(
-                    f"  detection={len(result['detection'])}, "
-                    f"segmentation={len(result['segmentation'])}, "
-                    f"missing_detection={result['missing_detection_samples']}, "
-                    f"missing_segmentation={result['missing_segmentation_samples']}"
-                )
+                clip_results[clip_index] = (clip_root, infos)
     else:
         with ProcessPoolExecutor(max_workers=worker_count) as executor:
             futures = [
                 executor.submit(process_clip_task, task) for task in tasks
             ]
             for completed, future in enumerate(as_completed(futures), start=1):
-                clip_index, clip_root, result, missing_path = future.result()
+                clip_index, clip_root, infos, missing_path = future.result()
                 if missing_path is not None:
-                    skipped_common_asset_clips.append((clip_root, missing_path))
-                    status = f"skipped shared asset; missing: {missing_path}"
+                    skipped_missing_file_clips.append((clip_root, missing_path))
+                    status = f"skipped; missing: {missing_path}"
                 else:
-                    clip_results[clip_index] = result
-                    status = (
-                        f"detection={len(result['detection'])}, "
-                        f"segmentation={len(result['segmentation'])}"
-                    )
+                    clip_results[clip_index] = (clip_root, infos)
+                    status = f"{len(infos)} samples"
                 print(
                     f"[{completed}/{len(tasks)}] {osp.basename(clip_root)}: "
                     f"{status}"
                 )
 
-    ordered_clip_results = list(zip(clip_roots, clip_results))
+    # Restore the deterministic, sorted clip order before train/val splitting.
+    clip_infos = [result for result in clip_results if result is not None]
+
     if split_by == "auto":
         split_by = "clip" if multiple_clips else "sample"
 
-    detection_train, detection_val = split_task_infos(
-        ordered_clip_results, "detection", split_by, split_ratio
-    )
-    segmentation_train, segmentation_val = split_task_infos(
-        ordered_clip_results, "segmentation", split_by, split_ratio
-    )
+    if split_by == "clip":
+        train_infos, val_infos = split_infos_by_clip(clip_infos, split_ratio)
+    else:
+        infos = []
+        for _, clip_info in clip_infos:
+            infos.extend(clip_info)
+        infos = sorted(infos, key=lambda x: (x["location"], x["timestamp"]))
+        train_infos, val_infos = split_infos_by_sample(infos, split_ratio)
 
-    valid_results = [result for result in clip_results if result is not None]
-    detection_clip_count = sum(bool(result["detection"]) for result in valid_results)
-    segmentation_clip_count = sum(
-        bool(result["segmentation"]) for result in valid_results
-    )
-    missing_detection_samples = sum(
-        result["missing_detection_samples"] for result in valid_results
-    )
-    missing_segmentation_samples = sum(
-        result["missing_segmentation_samples"] for result in valid_results
-    )
-    common_metadata = {
+    metadata = {
         "version": version,
         "classes": CUSTOM_OBJECT_CLASSES,
         "clip_count": len(clip_roots),
-        "shared_asset_complete_clip_count": len(valid_results),
-        "shared_asset_missing_clip_count": len(skipped_common_asset_clips),
+        "complete_clip_count": len(clip_infos),
+        "missing_file_clip_count": len(skipped_missing_file_clips),
         "split_by": split_by,
         "workers": worker_count,
     }
-    detection_metadata = {
-        **common_metadata,
-        "task": "3d_detection",
-        "usable_clip_count": detection_clip_count,
-        "missing_annotation_sample_count": missing_detection_samples,
-    }
-    segmentation_metadata = {
-        **common_metadata,
-        "task": "lane_segmentation",
-        "usable_clip_count": segmentation_clip_count,
-        "missing_annotation_sample_count": missing_segmentation_samples,
-    }
 
-    detection_train_path = osp.join(
-        output_root, f"{info_prefix}_infos_train.pkl"
-    )
-    detection_val_path = osp.join(
-        output_root, f"{info_prefix}_infos_val.pkl"
-    )
-    segmentation_train_path = osp.join(
-        output_root, f"{info_prefix}_seg_infos_train.pkl"
-    )
-    segmentation_val_path = osp.join(
-        output_root, f"{info_prefix}_seg_infos_val.pkl"
-    )
-    dump_pickle(
-        {"infos": detection_train, "metadata": detection_metadata},
-        detection_train_path,
-    )
-    dump_pickle(
-        {"infos": detection_val, "metadata": detection_metadata},
-        detection_val_path,
-    )
-    dump_pickle(
-        {"infos": segmentation_train, "metadata": segmentation_metadata},
-        segmentation_train_path,
-    )
-    dump_pickle(
-        {"infos": segmentation_val, "metadata": segmentation_metadata},
-        segmentation_val_path,
-    )
+    train_path = osp.join(output_root, f"{info_prefix}_infos_train.pkl")
+    val_path = osp.join(output_root, f"{info_prefix}_infos_val.pkl")
+    dump_pickle({"infos": train_infos, "metadata": metadata}, train_path)
+    dump_pickle({"infos": val_infos, "metadata": metadata}, val_path)
 
     print(f"Total clips: {len(clip_roots)}")
-    print(f"Clips with detection samples: {detection_clip_count}")
-    print(f"Clips with segmentation samples: {segmentation_clip_count}")
-    print(
-        f"Clips skipped for missing shared assets: "
-        f"{len(skipped_common_asset_clips)}"
-    )
-    print(
-        f"Detection samples: {len(detection_train) + len(detection_val)} "
-        f"(missing labels: {missing_detection_samples})"
-    )
-    print(f"  Train: {len(detection_train)} -> {detection_train_path}")
-    print(f"  Val: {len(detection_val)} -> {detection_val_path}")
-    print(
-        f"Segmentation samples: {len(segmentation_train) + len(segmentation_val)} "
-        f"(missing labels: {missing_segmentation_samples})"
-    )
-    print(f"  Train: {len(segmentation_train)} -> {segmentation_train_path}")
-    print(f"  Val: {len(segmentation_val)} -> {segmentation_val_path}")
+    print(f"Complete clips: {len(clip_infos)}")
+    print(f"Clips skipped for missing files: {len(skipped_missing_file_clips)}")
+    print(f"Total samples: {len(train_infos) + len(val_infos)}")
+    print(f"Train samples: {len(train_infos)} -> {train_path}")
+    print(f"Val samples: {len(val_infos)} -> {val_path}")
     print(f"Converted point clouds are stored under {output_root}.")
     elapsed = time.perf_counter() - start_time
     print(f"Elapsed time: {elapsed:.1f}s ({elapsed / 60.0:.1f} min)")

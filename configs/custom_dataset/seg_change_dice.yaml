@@ -1,3 +1,7 @@
+# Segmentation-only improved baseline with batch-level Focal + Dice.
+# Keeps the 8-class target, 200x200 grid, line_width=2, and mild augmentation.
+# Changes only the augmentation strength proven harmful by the one-clip ablation.
+
 dataset_type: NuScenesDataset
 dataset_root: data/
 dataset_write_root: data_write/
@@ -13,16 +17,19 @@ voxel_size: [0.2, 0.2, 0.2]
 image_size: [256, 704]
 
 augment2d:
-  resize: [[0.36, 0.45], [0.40, 0.40]]
-  rotate: [-5.4, 5.4]
+  # Mild image augmentation: preserve thin-line geometry.
+  resize: [[0.38, 0.42], [0.40, 0.40]]
+  rotate: [-2.0, 2.0]
   gridmask:
     prob: 0.0
     fixed_prob: true
 
 augment3d:
-  scale: [0.9, 1.1]
-  rotate: [-0.78539816, 0.78539816]
-  translate: 0.5
+  # The previous +/-45 degree BEV rotation and strong scaling prevented
+  # even a single clip from being fitted reliably.
+  scale: [0.98, 1.02]
+  rotate: [-0.17453293, 0.17453293]
+  translate: 0.2
 
 object_classes:
   - car
@@ -183,7 +190,14 @@ model:
           - [-50.0, 50.0, 0.5]
         prescale_factor: 1
       classes: ${map_classes}
-      loss: focal
+      # Batch-level Dice strengthens sparse lane and road-mark supervision.
+      # Keep alpha disabled in the first ablation so Dice is the only new factor.
+      loss: focal_dice
+      focal_alpha: -1.0
+      focal_gamma: 2.0
+      focal_weight: 1.0
+      dice_weight: 1.0
+      dice_smooth: 1.0
     object: null
 
 train_pipeline:
@@ -217,7 +231,8 @@ train_pipeline:
     resize_lim: ${augment2d.resize[0]}
     bot_pct_lim: [0.0, 0.0]
     rot_lim: ${augment2d.rotate}
-    rand_flip: true
+    # Disable image mirroring for the first clean segmentation baseline.
+    rand_flip: false
     is_train: true
   -
     type: GlobalRotScaleTrans
@@ -231,8 +246,6 @@ train_pipeline:
     ybound: [-50.0, 50.0, 0.5]
     classes: ${map_classes}
     line_width: 2
-  -
-    type: RandomFlip3D
   -
     type: PointsRangeFilter
     point_cloud_range: ${point_cloud_range}
@@ -428,3 +441,5 @@ runner:
 evaluation:
   interval: 1
   pipeline: ${test_pipeline}
+
+

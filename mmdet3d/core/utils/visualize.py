@@ -39,6 +39,17 @@ MAP_PALETTE = {
     "road_divider": (202, 178, 214),
     "lane_divider": (106, 61, 154),
     "divider": (106, 61, 154),
+    # Custom road-surface-element classes.
+    "solid_lane": (255, 215, 0),
+    "dashed_lane": (255, 140, 0),
+    "double_solid": (255, 69, 0),
+    "diversion_boundary": (148, 103, 189),
+    "centerline": (30, 144, 255),
+    "stopline": (220, 20, 60),
+    "crosswalk": (0, 206, 209),
+    "roadside": (34, 139, 34),
+    "area": (166, 206, 227),
+    "arrow": (255, 20, 147),
 }
 
 
@@ -182,6 +193,8 @@ def visualize_map(
     background: Tuple[int, int, int] = (240, 240, 240),
 ) -> None:
     assert masks.dtype == bool, masks.dtype
+    assert masks.ndim == 3, masks.shape
+    assert masks.shape[0] == len(classes), (masks.shape, len(classes))
 
     canvas = np.zeros((*masks.shape[-2:], 3), dtype=np.uint8)
     canvas[:] = background
